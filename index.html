@@ -225,6 +225,11 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 .tw .hm tr.tier td{font:700 12px var(--display);font-stretch:90%;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);padding:14px 6px 2px}
 .legend .sw{display:inline-block;width:12px;height:12px;border-radius:3px;background:var(--sunk);vertical-align:-2px;margin-right:6px} .legend .sw.x{background:var(--bad)}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+.sync{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center}
+.sync .btn{font-size:12.5px;padding:4px 10px}
+.sydot{width:8px;height:8px;border-radius:50%;background:var(--line);display:inline-block;flex:none}
+.sydot.ok{background:var(--good)} .sydot.saving,.sydot.load{background:var(--mark)} .sydot.err{background:var(--bad)}
+.syerr{color:var(--bad);flex-basis:100%;font-size:12px}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 
@@ -236,7 +241,7 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
         <div class="tree" id="tree"></div>
     <div class="railfoot">
       <div><span class="dot solid"></span>Solid coverage <span class="dot partial" style="margin-left:8px"></span>Partial <span class="dot thin" style="margin-left:8px"></span>Thin</div>
-      <div>Scores are kept in this browser only.</div>
+      <div class="sync"></div>
     </div>
   </nav>
   <main>
@@ -259,7 +264,7 @@ const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",
 const KEY="om1077-v1";
 let S={a:{}};
 try{const s=JSON.parse(localStorage.getItem(KEY));if(s&&s.a)S=s}catch(e){}
-const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}};
+const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){};if(typeof syOnSave==="function")syOnSave()};
 const NODES=DATA.nodes, Q=DATA.quiz;
 const byId=Object.fromEntries(NODES.map(n=>[n.id,n]));
 const QI=Object.fromEntries(Q.map(q=>[q.id,q]));
@@ -310,7 +315,7 @@ function route(){
   if(h==="gen"||h.startsWith("gen-")){const id=h.startsWith("gen-")?h.slice(4).replace(/-/g,"."):null;cur={view:"gen",id:null};renderGenSetup(id&&byId[id]?id:null);buildTree($("#search").value);window.scrollTo(0,0);return}
   if(h==="weak"){cur={view:"weak",id:null};renderWeak();buildTree($("#search").value);window.scrollTo(0,0);return}
   if(h==="test"){cur={view:"test",id:null};renderTestSetup();buildTree($("#search").value);return}
-  cur={view:"home",id:null};renderHome();buildTree($("#search").value);
+  cur={view:"home",id:null};renderHome();buildTree($("#search").value);if(typeof syRender==="function")syRender();
 }
 window.addEventListener("popstate",route);
 $("#goHome").onclick=()=>go("home");
@@ -347,6 +352,7 @@ function renderHome(){
     <div class="legend"><span><span class="pass"></span>Pass mark 68% (reported by a third-party prep site; confirm on Oracle's exam page)</span><span>Exam format: about 50 questions in 90 minutes</span></div>
     <div class="panel"><h2>Weak spots</h2><p>A heatmap of the objectives Oracle flagged on your five failed attempts, with your current quiz score for each and a test built from the ones you missed most often.</p><a class="btn primary" style="text-decoration:none;display:inline-block" href="#weak">Open weak spots</a></div>
     <div class="panel"><h2>Question generator</h2><p>Pick one subtopic, for example 1.3.2 Create product transformation rules, and get a fresh set of up to 10 questions. It serves questions you haven't seen first, then the ones you missed, and shuffles the answer order every time. Multi-answer questions are marked "choose two" or "choose three", like on the exam.</p><a class="btn primary" style="text-decoration:none;display:inline-block" href="#gen">Open the generator</a></div>
+    <div class="panel"><h2>Sync across devices</h2><p>Sign in with Google to keep your answers, scores and weak-spot progress in step on every device.</p><div class="sync"></div></div>
     <div class="panel"><h2>How to use this guide</h2>
       <p>Read an objective's notes, then take its quiz without looking. Retest the questions you miss after a day or two. Use Practice test for mixed questions across sections, and aim for 80% or more before booking.</p>
       <p style="margin:0">Coverage dots show how complete the source material is for each objective. Red and amber objectives still need more input in future sessions.</p></div>`;
@@ -600,6 +606,90 @@ function renderWeak(){
     <div class="panel"><h2>Never flagged</h2><p>None of the five reports listed these objectives.</p><div class="toc" style="margin:0">${never.map(n=>`<a href="#t-${n.id.replace(/\./g,"-")}">${n.id} ${esc(n.title)}</a>`).join("")}</div></div>`;
   $("#wgo").onclick=()=>{const p=wPool(4).slice(0,+$("#wn").value);if(p.length)runTest(shuffle(p))};
 }
+/* ---------- cloud sync (Firebase Auth + Firestore) ---------- */
+const FIREBASE_CONFIG={apiKey:"AIzaSyDORSVxxRxmdkUklV4j53ofl2pRDVMs5Jw",authDomain:"om-exam-guide.firebaseapp.com",projectId:"om-exam-guide",storageBucket:"om-exam-guide.firebasestorage.app",messagingSenderId:"909320251001",appId:"1:909320251001:web:1f969f9d8439c3122796a8"};
+const FBV="10.12.2";
+const SY={user:null,db:null,fs:null,ref:null,timer:null,state:"off",msg:"",keys:new Set(Object.keys(S.a)),d:{}};
+try{const t=JSON.parse(localStorage.getItem(KEY+"-del"));if(t&&typeof t==="object")SY.d=t}catch(e){}
+function syLocalWrite(){try{localStorage.setItem(KEY,JSON.stringify(S));localStorage.setItem(KEY+"-del",JSON.stringify(SY.d))}catch(e){}}
+/* called after every local save: record deletions (Try again / Reset answers) as tombstones, then queue an upload */
+function syOnSave(){
+  const now=Date.now();
+  for(const k of SY.keys)if(!(k in S.a))SY.d[k]=now;
+  for(const k of Object.keys(S.a))delete SY.d[k];
+  SY.keys=new Set(Object.keys(S.a));
+  try{localStorage.setItem(KEY+"-del",JSON.stringify(SY.d))}catch(e){}
+  syQueue();
+}
+/* newest change wins, per question; a deletion counts as a change */
+function syMerge(A,B){
+  const out={a:{},d:{}};const ids=new Set([...Object.keys(A.a||{}),...Object.keys(A.d||{}),...Object.keys(B.a||{}),...Object.keys(B.d||{})]);
+  for(const id of ids){
+    const c=[[A.a&&A.a[id],0],[B.a&&B.a[id],0],[null,A.d&&A.d[id]],[null,B.d&&B.d[id]]];
+    let best=null,bt=-1,del=false;
+    for(const [ans,dt] of c){if(ans){const t=ans.t||0;if(t>bt){bt=t;best=ans;del=false}}else if(dt){if(dt>bt){bt=dt;best=null;del=true}}}
+    if(del)out.d[id]=bt;else if(best)out.a[id]=best;
+  }
+  return out;
+}
+function syApply(remote){
+  const m=syMerge({a:S.a,d:SY.d},remote);
+  const changed=JSON.stringify(m.a)!==JSON.stringify(S.a);
+  S.a=m.a;SY.d=m.d;SY.keys=new Set(Object.keys(S.a));syLocalWrite();
+  if(changed){buildTree($("#search").value);if(cur.view==="home"||cur.view==="weak")route()}
+  return JSON.stringify(m)!==JSON.stringify({a:remote.a||{},d:remote.d||{}});
+}
+function syQueue(){if(!SY.user)return;clearTimeout(SY.timer);SY.timer=setTimeout(syPush,1500);syStatus("saving")}
+async function syPush(){
+  if(!SY.user)return;
+  try{await SY.fs.setDoc(SY.ref,{json:JSON.stringify({a:S.a,d:SY.d}),updated:Date.now(),n:Object.keys(S.a).length});syStatus("ok")}
+  catch(e){syStatus("err",e.code||e.message)}
+}
+function syStatus(state,msg=""){SY.state=state;SY.msg=msg;syRender()}
+function syRender(){
+  let h;
+  if(!FIREBASE_CONFIG)h=`<span class="sydot"></span><span>Scores are kept in this browser only.</span>`;
+  else if(SY.state==="na")h=`<span class="sydot"></span><span>Sync isn't available on this page. Use the GitHub Pages version.</span>`;
+  else if(!SY.user)h=`<span class="sydot"></span><span>Scores are kept in this browser only.</span><button class="btn syIn">Sign in to sync devices</button>${SY.state==="err"?`<span class="syerr">${esc(SY.msg)}</span>`:""}`;
+  else{const lab={ok:"Synced",saving:"Saving…",load:"Loading…",err:"Sync error"}[SY.state]||"Synced";
+    h=`<span class="sydot ${SY.state}"></span><span>${lab} · ${esc(SY.user.email||"signed in")}</span>${SY.state==="err"?`<span class="syerr">${esc(SY.msg)}</span>`:""}<button class="btn syOut">Sign out</button>`}
+  document.querySelectorAll(".sync").forEach(el=>{el.innerHTML=h;
+    const i=el.querySelector(".syIn");if(i)i.onclick=sySignIn;
+    const o=el.querySelector(".syOut");if(o)o.onclick=()=>SY.auth.signOut(SY.authObj)});
+}
+async function sySignIn(){
+  try{await SY.auth.signInWithPopup(SY.authObj,new SY.auth.GoogleAuthProvider())}
+  catch(e){
+    if(e.code==="auth/popup-blocked"||e.code==="auth/operation-not-supported-in-this-environment"){try{await SY.auth.signInWithRedirect(SY.authObj,new SY.auth.GoogleAuthProvider());return}catch(e2){e=e2}}
+    if(e.code!=="auth/popup-closed-by-user"&&e.code!=="auth/cancelled-popup-request")syStatus("err",e.code||e.message);
+  }
+}
+async function syInit(){
+  syRender();
+  if(!FIREBASE_CONFIG)return;
+  try{
+    const base="https://www.gstatic.com/firebasejs/"+FBV+"/";
+    const [app,auth,fs]=await Promise.all([import(base+"firebase-app.js"),import(base+"firebase-auth.js"),import(base+"firebase-firestore.js")]);
+    const a=app.initializeApp(FIREBASE_CONFIG);
+    SY.auth=auth;SY.authObj=auth.getAuth(a);SY.fs=fs;SY.db=fs.getFirestore(a);
+    auth.getRedirectResult(SY.authObj).catch(e=>syStatus("err",e.code||e.message));
+    let unsub=null;
+    auth.onAuthStateChanged(SY.authObj,user=>{
+      if(unsub){unsub();unsub=null}
+      SY.user=user;
+      if(!user){syStatus("off");return}
+      SY.ref=fs.doc(SY.db,"progress",user.uid);syStatus("load");
+      unsub=fs.onSnapshot(SY.ref,snap=>{
+        if(snap.metadata.hasPendingWrites)return;
+        let remote={a:{},d:{}};
+        if(snap.exists()){try{remote=JSON.parse(snap.data().json)}catch(e){}}
+        const needPush=syApply(remote);
+        if(needPush)syQueue();else syStatus("ok");
+      },e=>syStatus("err",e.code||e.message));
+    });
+  }catch(e){syStatus("na")}
+}
+syInit();
 route();
 </script>
 
